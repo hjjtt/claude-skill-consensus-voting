@@ -65,19 +65,43 @@ Before spawning any research agents or voters, the parent agent **MUST** inspect
 
 Before voting, gather structured data. Assign 1-2 parallel research agents:
 
+**🚨 CRITICAL — Subagent Search Tool (revised 2026-06-16 after real failure):**
+Subagents inside the **Workflow tool** MUST use `mcp__web-search-prime__web_search_prime` and `mcp__web-reader__webReader`. **`WebSearch` / `WebFetch` is UNRELIABLE in subagent contexts** — see Case 11 below.
+
 ```javascript
+// Inside the Workflow script — subagents MUST use MCP, not WebSearch
 const research = await parallel([
-  () => agent("Research factor group A: [venue, environment, external conditions]", { model: "sonnet" }),
-  () => agent("Research factor group B: [actors, capabilities, recent performance]", { model: "sonnet" }),
+  () => agent(
+    "Research factor group A: [venue, environment, external conditions]. " +
+    "Use mcp__web-search-prime__web_search_prime for searches. " +
+    "Use mcp__web-reader__webReader for full-page reads. " +
+    "DO NOT use WebSearch or WebFetch — they return 0 results in subagent context.",
+    { label: "Research-A" }
+  ),
+  () => agent(
+    "Research factor group B: [actors, capabilities, recent performance]. " +
+    "Use mcp__web-search-prime__web_search_prime. DO NOT use WebSearch.",
+    { label: "Research-B" }
+  ),
 ])
 ```
 
 **Rule:** Each research agent covers a different dimension. Never have two agents research the same thing — waste of tokens.
 
-**Search tool (MCP preferred, fallback OK):**
-1. `mcp__web-search-prime__web_search_prime` — preferred (Zhipu/BigModel)
-2. `mcp__web-reader__webReader` — for full-page reads
-3. `WebSearch` / `WebFetch` — usable fallback if MCP unavailable
+**Search tool priority (subagents — REVISED 2026-06-16):**
+1. `mcp__web-search-prime__web_search_prime` — **MANDATORY for subagents** (WebSearch returns 0 results in this context)
+2. `mcp__web-reader__webReader` — **MANDATORY for full-page reads** (WebFetch unreliable in subagents)
+3. `WebSearch` / `WebFetch` — **DO NOT USE in subagent context** (silent failure mode)
+4. Parent agent (non-workflow) — still uses MCP-first per legacy preference
+
+**Why this was changed (Case 11 — 2026-06-16 wc-20260617-4match run):**
+- 4 research subagents inside the Workflow tool used `WebSearch` (default, per the prior version of this rule)
+- All 4 returned `search_unavailable` after 4 queries each
+- 3 of 4 matches (ARG-ALG, FRA-SEN, AUT-JOR) were PASSED by the judge due to "no data"
+- Direct test by parent agent using `mcp__web-search-prime` for the same 3 matches returned **10+ highly relevant results each** (ESPN, RotoWire, Goal.com predicted XIs, betting odds, Group J preview)
+- The data was there — only the wrong tool was used
+- Lost betting opportunity: 3 PASSED matches had clear favorite ML picks at 1.34-1.41 odds
+- **Fix:** Force subagents to load `mcp__web-search-prime` via ToolSearch at workflow start, then explicitly direct them to use it. Do not let subagents "default" to WebSearch.
 
 **Search discipline (HARD CAPS — exceed these and stop):**
 - Max **5 search queries + 3 page fetches per agent (8 tool calls total)**
@@ -87,36 +111,83 @@ const research = await parallel([
 
 If all search tools fail after 2 attempts, return `{"status": "search_unavailable", "reason": "No live web results retrieved."}` — never fall back to training-data fabrication.
 
-### Step 2: N-Model Independent Vote
+### Step 2: N-Model Independent Vote (MUST use Workflow tool)
 
-Spawn 3-5 voters in parallel. Each gets:
-- The same raw data
+> **CRITICAL — User-mandated rule (2026-06-16):** 4-mirror voting **MUST** be executed via the **Workflow tool** (`workflow({script: "..."})` or a named workflow). The Workflow tool internally dispatches to genuinely different models (opus / sonnet / haiku / fable). Direct `Agent` calls in the user's environment collapse to a single model (`minimax-m3`), which destroys model diversity and defeats the entire purpose of adversarial agreement. See [[user-workflow-tool-mandatory]].
+
+The Workflow script fans out 4 voters in parallel. Each voter gets:
+- The same raw data (from Step 1 research)
 - A different analytical lens (this is critical — identical prompts produce correlated outputs, which defeats the purpose)
+- Implicitly, a different model tier (the Workflow tool rotates across opus / sonnet / haiku / fable)
+
+**Reference template (use as a saved workflow OR pass inline):**
 
 ```javascript
+// File: consensus-vote-4mirror.js
+export const meta = {
+  name: 'consensus-vote-4mirror',
+  description: '4-mirror independent vote + judge synthesis. Use for high-stakes predictions.',
+  phases: [
+    { title: 'Voter A (Deep)' },
+    { title: 'Voter B (Momentum)' },
+    { title: 'Voter C (Signal)' },
+    { title: 'Voter D (Narrative)' },
+    { title: 'Judge' },
+  ],
+}
+
+const sharedContext = args.sharedContext  // passed by parent
+const calData = args.calibrationData       // passed by parent (or agent reads it)
+
 const votes = await parallel([
-  () => agent(
-    `${sharedContext}\n\nLens: Deep structural analysis. Weight long-term patterns heavily.`,
-    { model: "opus", label: "Voter-A (Deep)" }
-  ),
-  () => agent(
-    `${sharedContext}\n\nLens: Recent momentum and form. Weight last 5 data points 2x.`,
-    { model: "sonnet", label: "Voter-B (Momentum)" }
-  ),
-  () => agent(
-    `${sharedContext}\n\nLens: Fast pattern matching. Focus on the 2-3 biggest differentiators only.`,
-    { model: "haiku", label: "Voter-C (Signal)" }
-  ),
-  () => agent(
-    `${sharedContext}\n\nLens: Narrative and psychological factors. Consider pressure, motivation, and historical patterns.`,
-    { model: "fable", label: "Voter-D (Narrative)" }
-  ),
+  () => agent(`${sharedContext}\n\nLens: Deep structural analysis. Weight long-term patterns, Poisson xG, and tactical matchups heavily.`, { label: 'Voter A (Deep)' }),
+  () => agent(`${sharedContext}\n\nLens: Recent momentum and form. Weight last 5 data points 2x. Focus on injuries, suspensions, and tactical shifts.`, { label: 'Voter B (Momentum)' }),
+  () => agent(`${sharedContext}\n\nLens: Fast signal extraction. Identify the 2-3 biggest differentiators only. Be decisive.`, { label: 'Voter C (Signal)' }),
+  () => agent(`${sharedContext}\n\nLens: Narrative and psychological factors. Pressure, motivation, historical patterns, derby/cup context.`, { label: 'Voter D (Narrative)' }),
 ])
+
+const consensus = await agent(`
+You are the JUDGE. 4 independent models voted.
+
+=== CONFIDENCE CALIBRATION DATA (MANDATORY) ===
+Historical rates per tier: ${JSON.stringify(calData?.tiers || 'see calibration_history.json')}
+- DOWNGRADE RULE: If a tier has ≥3 samples and rate < 50%, downgrade confidence by 1.5-2.0 points.
+- SAMPLE-SIZE GATE (X5): 7-8 tier needs N≥5 with rate≥40%; 9-10 tier needs N≥5 with rate≥70%; otherwise cap.
+- APPEND calibration context: "🎯 [Pick] @ X/10 (Historical Calibrated Rate: YY% over N samples, downgraded from Z)"
+
+=== VOTES ===
+${votes.map((v, i) => `VOTER ${String.fromCharCode(65+i)}:\n${v}`).join('\n\n===\n\n')}
+
+Output MUST include:
+1. CONSENSUS ITEMS — what ≥75% of voters agree on
+2. DISSENT ITEMS — where voters diverge, and why
+3. FINAL RECOMMENDATION — with explicit confidence score (1-10) and Mode (A hit-rate / B EV) if betting
+4. RISK MATRIX — what could invalidate the consensus
+5. KEY VARIABLE — the single info that would most change the answer
+`, { label: 'Judge (Synthesis)' })
+
+return { votes, consensus }
 ```
+
+**Invocation:**
+
+```javascript
+// From the parent agent:
+const result = await workflow('consensus-vote-4mirror', {
+  sharedContext: researchContext,
+  calibrationData: { tiers: { '7-8': { rate: 0.143, predictions: 7 } } },
+})
+```
+
+**Failure recovery:** If the Workflow stalls (no progress for 5+ min), the parent may call `TaskStop` on the workflow task_id, then fall back to direct `Agent` calls — but **only** if the user has been informed. Direct Agent fallback is acceptable as a degradation, not the default.
 
 ### Step 3: Judge Synthesis
 
+> The Judge **also runs inside the Workflow tool** (see Step 2). The parent does not call `agent()` directly for the judge — that would defeat model diversity. The Workflow script orchestrates: parallel voters → barrier → judge.
+
 One judge reads ALL votes and produces:
+
+**Reference (last stage of consensus-vote-4mirror.js from Step 2):**
 
 ```javascript
 const consensus = await agent(`
@@ -126,6 +197,7 @@ const consensus = await agent(`
   Before assigning the final confidence rating (1-10), you MUST read C:\Users\84988\.claude\scratch\consensus-voting\calibration_history.json using the view_file tool.
   Look up the historical win rate ("rate") for your target confidence tier.
   - DOWNGRADE RULE: If the target tier has at least 3 historical samples (predictions >= 3) and its win rate is less than 50% (rate < 0.50), you MUST downgrade the confidence score by 1.5 to 2.0 points, capping it at the next-lower tier.
+  - SAMPLE-SIZE GATE (X5): tier 7-8 needs N≥5 with rate≥40%; tier 9-10 needs N≥5 with rate≥70%; tier 5-6 needs N≥3 with rate≥30%. Otherwise cap at the next-lower tier.
   - You MUST append the historical calibration context to your rating, e.g.:
     "🎯 Consensus: [Pick] @ 6.0/10 (Historical Calibrated Rate: 33.3% over 3 samples, downgraded from 7.5 due to low calibration history)"
 
@@ -135,10 +207,10 @@ const consensus = await agent(`
   Your output MUST include:
   1. CONSENSUS ITEMS — what ≥75% of voters agree on
   2. DISSENT ITEMS — where voters diverge, and why
-  3. FINAL RECOMMENDATION — with explicit confidence score (1-10)
+  3. FINAL RECOMMENDATION — with explicit confidence score (1-10) and Mode (A hit-rate / B EV) if betting
   4. RISK MATRIX — what could invalidate the consensus, ranked by probability
   5. KEY VARIABLE — the single piece of info that, if known, would most change the answer
-`, { model: "opus", label: "Consensus Judge" })
+`, { label: 'Consensus Judge' })
 ```
 
 ### Step 3.5: Bet Recommendation Mode (lottery / betting workflows only)
@@ -312,3 +384,21 @@ The user asked for "high accuracy" — don't cheap out. But also don't run 10 ag
 **Lesson:** When a voter suggests a more conservative option (double-select) in a high-confidence direction, the judge should respect the user's "hit-rate first" preference (Mode A) and accept the lower payout per win. The "probability premium" argument only holds if EV is being optimized (Mode B). Skill should add: **In Mode A, always prefer double-select over single-select when user has signaled "hit-rate first" preference.**
 
 **Skill update needed:** Step 3.5 should explicitly note that in Mode A, double-select (covering the top-2 most likely outcomes) is preferred over single-select when both options are available. The "Mode A = highest model probability" rule is misleading — Mode A is actually "highest hit-rate with acceptable odds," which double-select achieves more reliably.
+
+### Case 11 — Subagent WebSearch silent zero-result failure (2026-06-17 wc-20260617-4match)
+**Scenario:** Ran the wc-20260617-4match-vote workflow with 4 research subagents. Each subagent was instructed (per the prior version of Step 1) to use `WebSearch` for context harvest. All 4 subagents returned `{"status": "search_unavailable"}` after 4 queries each — 0 result content for the 2026 World Cup fixtures (ARG vs ALG, FRA vs SEN, IRQ vs NOR, AUT vs JOR).
+
+**The 4-mirror vote therefore received empty research data for 3 of 4 matches.** The judge — correctly applying the "no fabrication" rule — PASSED those 3 matches. Only M3 (Iraq vs Norway) had partial data and was given an actionable pick (Norway ML @ 5 confidence, X5-capped).
+
+**Reality (verified by parent using `mcp__web-search-prime`):** All 3 PASSED matches had abundant data available:
+- **M1 ARG vs ALG** — Group J opener at Kansas City, ESPN/Rotowire/365scores all had predicted XIs, betting odds, and tactical previews. Argentina -245 ML, Mahrez-led Algeria, Messi 200-club narrative.
+- **M2 FRA vs SEN** — Group I "group of death" opener, full predicted XIs (Maignan/Tchouameni/Mbappe vs Mendy/Koulibaly/Mané), odds France -250.
+- **M4 AUT vs JOR** — Group J second match, Austria -295 ML, lineup notes (Alaba captain), Jordan first-ever WC game.
+
+**Root cause:** The 2026-06-16 Step 1 update instructed subagents to use `WebSearch` "for performance" (avoiding MCP overhead). This was wrong — `WebSearch` in the subagent context appears to return 0 results for any non-trivial query. `mcp__web-search-prime` works fine in the same context. The "performance" rationale was a false economy: empty results forced the judge to PASS 3 matches, losing actionable picks.
+
+**Loss assessment:** 3 actionable picks lost. Had the correct tool been used, the 4-mirror vote would have produced 4 picks (likely all heavy favorites at -245 to -460 ML) instead of 1 pick + 3 PASSes.
+
+**Lesson:** Subagent tool selection is NOT the same as parent agent tool selection. The "lighter is better" intuition fails when the lighter tool is silently broken. **Hard rule:** Subagents in Workflow tools MUST use `mcp__web-search-prime__web_search_prime`. `WebSearch` is forbidden in subagent context.
+
+**Skill update applied:** Step 1 (this update). Search tool priority reversed — MCP is mandatory for subagents, not optional.
