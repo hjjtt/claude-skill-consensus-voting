@@ -299,3 +299,16 @@ The quality of consensus depends on voter **diversity**, not voter **count**. Fo
 | Exhaustive (5 voters + 2 research + 1 judge) | 8 | ~$0.50-1.00 |
 
 The user asked for "high accuracy" — don't cheap out. But also don't run 10 agents on a $5 question.
+
+## Real Failure Cases (additions)
+
+### Case 9 — Judge over-ride voter D's "double-select" suggestion
+**Scenario:** 2026-06-17 Iraq vs Norway 4-mirror vote. Three voters (A/B/C) recommended away-win single-select (mean 71% P_away); voter D (narrative lens) recommended "away-win or draw" double-select due to perceived narrative risk (Norway's historical 0-win in WC, first match pressure). The judge overruled D, citing "double-select abandons 25-30pp of pure away-win probability premium."
+
+**Reality:** The judge's reasoning was mathematically wrong. Double-select INCREASES hit-rate from 70% (single away) to 88% (away OR draw), at the cost of lower payout per win. The "premium" claim was inverted — single-select had HIGHER EV variance but the same +EV calculation missed the variance reduction that double-select provides.
+
+**Math check:** With λ_away=2.35, λ_home=0.45 → P_away=0.70, P_draw=0.18, P_home=0.12. Single-select away: EV ≈ -9.15u per 20u bet (loses 0.30 × 20 = 6u per 100u bet on average). Double-select away+draw: EV ≈ +0.02u (essentially breakeven but with 88% win probability, much safer for casual bettors who value hit-rate).
+
+**Lesson:** When a voter suggests a more conservative option (double-select) in a high-confidence direction, the judge should respect the user's "hit-rate first" preference (Mode A) and accept the lower payout per win. The "probability premium" argument only holds if EV is being optimized (Mode B). Skill should add: **In Mode A, always prefer double-select over single-select when user has signaled "hit-rate first" preference.**
+
+**Skill update needed:** Step 3.5 should explicitly note that in Mode A, double-select (covering the top-2 most likely outcomes) is preferred over single-select when both options are available. The "Mode A = highest model probability" rule is misleading — Mode A is actually "highest hit-rate with acceptable odds," which double-select achieves more reliably.
