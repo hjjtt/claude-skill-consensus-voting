@@ -54,6 +54,13 @@ When stakes are high and a single model's bias can cost you, spin up N independe
 
 ## Execution Pattern
 
+### Step 0.5: User Preference Loading (Betting Workflows Only)
+
+Before spawning any research agents or voters, the parent agent **MUST** inspect memory files under `C:\Users\84988\.claude\projects\C--Users-84988\memory\` (primarily `user-lottery-priority.md`) using `view_file`.
+- **Parsing Preference**: If the memory states "prioritize per-bet hit-rate" or "命中优先", the agent **must** automatically choose **Mode A (Hit-rate first)** as the default recommendation mode.
+- **Preference Citation**: The final report **must** append a citation at the very top:
+  `[Loaded User Preference: user-lottery-priority ➔ Selected Mode A (Hit-rate first)]`
+
 ### Step 1: Context Harvest
 
 Before voting, gather structured data. Assign 1-2 parallel research agents:
@@ -66,6 +73,18 @@ const research = await parallel([
 ```
 
 **Rule:** Each research agent covers a different dimension. Never have two agents research the same thing — waste of tokens.
+
+**Search tool (MCP preferred, fallback OK):**
+1. `mcp__web-search-prime__web_search_prime` — preferred (Zhipu/BigModel)
+2. `mcp__web-reader__webReader` — for full-page reads
+3. `WebSearch` / `WebFetch` — usable fallback if MCP unavailable
+
+**Search discipline (HARD CAPS — exceed these and stop):**
+- Max **5 search queries + 3 page fetches per agent (8 tool calls total)**
+- Max 4 minutes wall-clock per agent
+- Stop the moment you have **2 independent TIER-1 sources** confirming each key fact
+
+If all search tools fail after 2 attempts, return `{"status": "search_unavailable", "reason": "No live web results retrieved."}` — never fall back to training-data fabrication.
 
 ### Step 2: N-Model Independent Vote
 
@@ -113,6 +132,59 @@ const consensus = await agent(`
   5. KEY VARIABLE — the single piece of info that, if known, would most change the answer
 `, { model: "opus", label: "Consensus Judge" })
 ```
+
+### Step 3.5: Bet Recommendation Mode (lottery / betting workflows only)
+
+If the workflow is producing **lottery or betting recommendations**, the judge must choose an explicit mode before picking a bet.
+
+**Mode A — Hit-rate first (default for casual bettors):** Pick the option with the **highest model probability** of occurring. EV is secondary. Use this when the user wants the ticket to *win*, not necessarily to be the most "smart" or +EV bet.
+
+**Mode B — EV first (default for sharp bettors):** Pick the option with the **highest expected value**: `EV = P(model) × odds − (1 − P(model))`. Use this when the user is optimizing long-term ROI.
+
+**How to choose:**
+1. If user memory or recent message explicitly states a preference (e.g. "我追求胜率"), use that mode.
+2. If unclear, ask the user before recommending. Don't silently default to one — both modes produce different bets.
+3. **If running in non-interactive / batch mode (no user feedback possible) and mode is unspecified**: do NOT silently default. Output a **Dual-Output table** showing both Mode A and Mode B picks side-by-side.
+
+### Step 3.6: Handicap Reading & Push Rules (China sports lottery / Asian handicap)
+
+#### Rule 1: Handicap Parsing Table (Never Infer, Always Mirror)
+
+The `+N` / `-N` sign in betting handicaps is **not** "who is favorite". It is "who gets/gives goals". Read the literal sign from the bet app screenshot or source data — do not infer from team strength.
+
+| Symbol | Meaning | Mathematical Resolution |
+|--------|---------|-------------------------|
+| `[+N]` or `+N` | 受让球 (Gets goals) | Adjusted Score = Actual Goals + N |
+| `[-N]` or `-N` | 让球 (Gives goals) | Adjusted Score = Actual Goals − N |
+
+A weak home team can be `[+1]` (underdog bonus). A strong away team can be `[-1]` (favorite penalty). Both formats appear in the same column in the bet app.
+
+**Voter/Judge Debug requirement:** All voters and the judge must print the raw label and parsing formula in their internal thought process (e.g. `Saudi Arabia [+1] ➔ Saudi gets 1 goal. Formula: G_home + 1`).
+
+**Selective Presentation:** The final user-facing output should only print this parsing label for *counter-intuitive / error-prone* matches (e.g. when the weaker home team receives a positive handicap, or high-push-risk lines). Conventional matches stay clean.
+
+#### Rule 2: Push (走盘) is NOT a Win in Mode A
+
+A handicap push (refund) occurs when the adjusted score is a draw (e.g. Home wins 2-1 on a -1 handicap). The bet is refunded.
+
+- **Formula:** `WP (Win Probability) + PP (Push Probability) + LP (Loss Probability) = 1.0`
+- **Mode A constraint:** A push is "no loss" but **must not** be counted as a "win". Sort and select options using **WP only**.
+- **Display requirement:** Display win, push, and loss probabilities separately: `Win Prob: XX% | Push Prob: YY% | Loss Prob: ZZ%`. Never sum WP and PP into a single "hit rate".
+
+**Outcome Resolution Table:**
+
+| Market | Option | Win (WP) | Push (PP) | Loss (LP) |
+|--------|--------|----------|-----------|-----------|
+| SPF | 主胜 | G_home > G_away | n/a | G_home ≤ G_away |
+| Handicap -1 | 客胜 (Away +1) | G_home < G_away + 1 | G_home = G_away + 1 | G_home > G_away + 1 |
+| Handicap -1 | 主胜 (Home -1) | G_home − 1 > G_away | G_home − 1 = G_away | G_home − 1 < G_away |
+| Handicap +1 | 客胜 (Away -1) | G_away − 1 > G_home | G_away − 1 = G_home | G_away − 1 < G_home |
+| Handicap +1 | 主胜 (Home +1) | G_home + 1 > G_away | G_home + 1 = G_away | G_home + 1 < G_away |
+
+**Tie-break between SPF and Handicap (when both allowed):**
+1. Compute real win probability (WP, excluding push) for each market.
+2. If `WP(Handicap) − WP(SPF) ≤ 3%` → prefer SPF (simpler, no push tracking).
+3. If `WP(Handicap) − WP(SPF) > 3%` → prefer Handicap.
 
 ### Step 4: Present Results
 
