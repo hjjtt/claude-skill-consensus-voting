@@ -83,6 +83,7 @@ const research = await parallel([
 - Max **5 search queries + 3 page fetches per agent (8 tool calls total)**
 - Max 4 minutes wall-clock per agent
 - Stop the moment you have **2 independent TIER-1 sources** confirming each key fact
+- **ABORT ON EMPTY**: If the first 2 search calls return 0 results each, the agent MUST immediately return `{"status": "search_unavailable", "reason": "2 consecutive empty results"}` and exit. Do NOT continue searching — empty results are a signal, not a condition to retry.
 
 If all search tools fail after 2 attempts, return `{"status": "search_unavailable", "reason": "No live web results retrieved."}` — never fall back to training-data fabrication.
 
