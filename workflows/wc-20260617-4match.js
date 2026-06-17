@@ -130,11 +130,31 @@ CRITICAL RULES:
 `.trim()
 
 // === Stage 2: 4-mirror vote with 90s cap each ===
+// Each lens MUST use the Step 2.0 Math Foundation:
+// - Poisson: P(X=k) = λ^k e^-λ / k!
+// - Bayesian: posterior = market_prior × X1 × X2 × X3 × X4 × X5
+// - Kelly (Mode B only): f* = (bp - q) / b
+// Lenses differ in WHICH prior to start from, not in HOW to update.
+const MATH_FOUNDATION = `
+SHARED MATH FOUNDATION (use exactly this, do not invent your own):
+1. Compute market prior: p_market = 1 / decimal_odds (from bookmaker ML)
+2. Apply X1-X5 corrections as Bayesian multipliers:
+   - X1 cold-start: × 0.70 (first match of tournament) or × 0.95 (second+ match)
+   - X2 home advantage cap: × 1.00 (home underdog) or × 0.85 (heavy home favorite)
+   - X3 heavy-tail: × 0.90 (don't overweight 0-0/1-0)
+   - X4 tactical overlay: × 0.85-1.15 (formation matchup)
+   - X5 sample-size gate: × 0.70 if tier 7-8 (forces downgrade to 5-6)
+3. Posterior = p_market × product of X multipliers
+4. Poisson scorelines: P(home=i, away=j) = e^-λ_h × λ_h^i / i! × e^-λ_a × λ_a^j / j!
+5. λ for each team = (posterior WP for that outcome) × (expected total goals / 2)
+6. Top-3 scorelines: rank by P(home=i, away=j) and list top 3 with exact probabilities
+`
+
 const votePrompts = [
-  `${sharedContext}\n\n=== LENS A: Deep Structural Analysis ===\nWeight long-term patterns, xG averages, formation matchups, tournament first-round effects. Provide lambda (with X1-X5 corrections), top-3 scorelines with probabilities, recommended pick with confidence (1-10), and Mode A/B recommendation.`,
-  `${sharedContext}\n\n=== LENS B: Recent Momentum & Form ===\nWeight last 5 matches 2x. Focus on injuries, suspensions, recent lineup trends. Be decisive on who has the momentum edge.`,
-  `${sharedContext}\n\n=== LENS C: Fast Signal Extraction ===\nIdentify the 2-3 biggest differentiators per match. Be concise. No hedging — pick the most likely outcome per match with a single-line justification.`,
-  `${sharedContext}\n\n=== LENS D: Narrative & Psychology ===\nConsider pressure, motivation, historical patterns, group context, "cold start" effects. Group I has 3 strong teams — does the schedule favor or hurt any?`,
+  `${sharedContext}\n\n${MATH_FOUNDATION}\n\n=== LENS A: Deep Structural Analysis ===\nYou weight LONG-TERM PATTERNS most heavily (xG averages, formation matchups, tactical fit). Start your market prior adjustment with long-run xG (last 50 matches) as the anchor, then apply X1-X5. Show your λ derivation explicitly. Top-3 scorelines with exact probabilities. Recommended pick with confidence (1-10) and Mode A/B.`,
+  `${sharedContext}\n\n${MATH_FOUNDATION}\n\n=== LENS B: Recent Momentum & Form ===\nYou weight RECENT FORM 2x. Start your prior from the team's last 5 matches' actual goals (not xG), then layer X1-X5. If a team is on a 3-win streak, that's a stronger signal than historical xG suggests. Be decisive: name the momentum edge per match.`,
+  `${sharedContext}\n\n${MATH_FOUNDATION}\n\n=== LENS C: Fast Signal Extraction ===\nYou identify the 2-3 BIGGEST DIFFERENTIATORS per match only. Skip the rest. Apply the same X1-X5 multipliers but justify each multiplier with one specific data point (e.g., "X1 = 0.70 because Norway hasn't played a competitive match in 30 days"). Be concise.`,
+  `${sharedContext}\n\n${MATH_FOUNDATION}\n\n=== LENS D: Narrative & Psychology ===\nYou weight NARRATIVE and PSYCHOLOGY: pressure, motivation, historical patterns, group context, derbies, "last dance" tournaments. Start your prior from the same market baseline, but the X1-X5 multipliers get qualitatively justified (e.g., "X1 = 0.95 not 0.70 because Ronaldo's last WC creates extra motivation, not less"). Surface non-obvious angles.`,
 ]
 
 log('Starting 4-mirror vote (90s cap each)')

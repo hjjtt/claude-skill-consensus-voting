@@ -115,9 +115,54 @@ If all search tools fail after 2 attempts, return `{"status": "search_unavailabl
 
 > **CRITICAL — User-mandated rule (2026-06-16):** 4-mirror voting **MUST** be executed via the **Workflow tool** (`workflow({script: "..."})` or a named workflow). The Workflow tool internally dispatches to genuinely different models (opus / sonnet / haiku / fable). Direct `Agent` calls in the user's environment collapse to a single model (`minimax-m3`), which destroys model diversity and defeats the entire purpose of adversarial agreement. See [[user-workflow-tool-mandatory]].
 
+#### Step 2.0: Shared Math Foundation (all 4 lenses MUST use this)
+
+All 4 voters compute probabilities the same way to avoid "lens drift" (lens A says λ=2.5, lens B says λ=1.8, no shared ground truth). Three primitives, applied in this order:
+
+**A. Poisson distribution — scoreline probabilities**
+$$P(X=k) = \frac{\lambda^k e^{-\lambda}}{k!}$$
+
+- `X` = goals scored by one team
+- `λ` (lambda) = expected goals for that team (a single number, not a range)
+- Two independent Poisson (home, away) → scoreline probability: `P(home=i, away=j) = P_h(i) × P_a(j)`
+
+**B. Bayesian update — turn prior into posterior**
+
+$$P(\text{favorite wins} \mid \text{new data}) \propto P(\text{favorite wins}) \times \prod_k \text{likelihood ratio}_k$$
+
+- **Prior** = market-implied probability from decimal odds: `p_market = 1 / decimal_odds`
+- **New data likelihoods** = the X1-X5 corrections (each is a multiplier between 0.5 and 1.5):
+  - X1 cold-start: × 0.70 (absolute first match of tournament) or × 0.95 (second+ match)
+  - X2 home advantage cap: × 1.00 if home underdog, × 0.85 if heavy home favorite
+  - X3 heavy-tail boost: × 0.90 for top-2 scorelines (don't overweight 0-0/1-0)
+  - X4 tactical overlay: × 0.85-1.15 depending on formation matchup
+  - X5 sample-size gate: × 0.70 if tier 7-8 (forces downgrade to 5-6)
+- **Posterior** = the model's "true" probability after seeing market + new data
+
+**C. Kelly criterion — stake sizing (only used in Mode B, not Mode A)**
+
+$$f^* = \frac{bp - q}{b}$$
+
+- `b` = net odds (decimal odds − 1)
+- `p` = your posterior probability
+- `q` = 1 − p
+- **If f\* < 0 → no bet** (no edge). In practice, use **half-Kelly** (f\*/2) to be robust to p-estimation error.
+
+**Worked example (6/17 Iraq vs Norway, from real data):**
+- Market odds: Norway -460 → decimal 1.217 → `p_market` = 1/1.217 = **82.2%**
+- X1 (Norway 28-yr absence, cold start dampening): × 0.92
+- X4 (Iraq compact 4-4-2 blocks Norway attack): × 0.93
+- X5 (tier 7-8 historically 14.3% hit rate, force downgrade): × 0.70
+- Posterior: 82.2% × 0.92 × 0.93 × 0.70 = **49.2%** Norway win
+- Double-select (win + draw) at decimal ~1.40: p_combined = 49.2% + 21% draw = **70.2%**
+- Half-Kelly: f\* = (0.40 × 0.702 − 0.298) / 0.40 = 0.103 → half = **5.1% of bankroll**
+
+**Why this is mandatory:** without shared math, lens prompts produce inconsistent λ's because each lens "feels" the prior differently. The 2026-06-15/16 collapse (4/4 strong-team picks missed) was partly this: each lens had its own ad-hoc λ reduction, summing to double-counted pessimism. Shared math = auditable disagreement.
+
 The Workflow script fans out 4 voters in parallel. Each voter gets:
 - The same raw data (from Step 1 research)
 - A different analytical lens (this is critical — identical prompts produce correlated outputs, which defeats the purpose)
+- **The same math foundation (Step 2.0) so λ differences are explainable, not vibes**
 - Implicitly, a different model tier (the Workflow tool rotates across opus / sonnet / haiku / fable)
 
 **Reference template (use as a saved workflow OR pass inline):**
